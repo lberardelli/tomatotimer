@@ -13,6 +13,8 @@
 #include <iterator>
 #include <filesystem>
 #include <thread>
+#include <mutex>
+#include <cmath>
 
 //rapidjson
 #include "document.h"
@@ -39,6 +41,88 @@ void CreateSettingsJson()
     doc.Accept(writer);
 }
 
+void WriteJson(rapidjson::Document& doc)
+{
+    std::ofstream settingsJson("resources/settings.json", std::ios::trunc);
+    if (!settingsJson.is_open())
+    {
+        std::cout << "Failed to write settings json\n";
+        return;
+    }
+    rapidjson::OStreamWrapper osw(settingsJson);
+    rapidjson::Writer<rapidjson::OStreamWrapper> writer(osw);
+    doc.Accept(writer);
+}
+
+void settings(rapidjson::Document& doc)
+{
+    bool bExit = false;
+    while (!bExit)
+    {
+        int nOption;
+        std::cout << "\nSettings\n1 - Adjust Pomodoro Duration\n2 - Adjust Long Rest Duration\n3 - Adjust Short Rest Duration\n4 - Adjust Daily Goal\n5 - Reset to Default\n6 - Return to main menu\n";
+        std::cin >> nOption;
+        switch (nOption)
+        {
+            case 1:
+            {
+                std::cout << "Enter desired pomodoro duration in minutes: ";
+                int nDuration;
+                std::cin >> nDuration;
+                doc["duration"].SetInt(nDuration);
+                WriteJson(doc);
+                break;
+            }
+            case 2:
+            {
+                std::cout << "Enter desired long rest duration in minutes: ";
+                int nDuration;
+                std::cin >> nDuration;
+                doc["longrest"].SetInt(nDuration);
+                WriteJson(doc);
+                break;
+            }
+            case 3:
+            {
+                std::cout << "Enter desired short rest duration in minutes: ";
+                int nDuration;
+                std::cin >> nDuration;
+                doc["shortrest"].SetInt(nDuration);
+                WriteJson(doc);
+                break;
+            }
+            case 4:
+            {
+                std::cout << "Enter desired daily goal: ";
+                int nGoal;
+                std::cin >> nGoal;
+                doc["goal"].SetInt(nGoal);
+                WriteJson(doc);
+            }
+            case 5:
+            {
+                CreateSettingsJson();
+                std::ifstream ifSettingsJson("resources/settings.json");
+                if (!ifSettingsJson.is_open())
+                {
+                    std::cout << "Failed to edit settings.json\n";
+                }
+                else
+                {
+                    char buf[65536]{};
+                    ifSettingsJson >> buf;
+                    doc.GetObject().RemoveAllMembers();
+                    doc.Parse(buf);
+                }
+            }
+            case 6:
+            {
+                bExit = true;
+            }
+        }
+    }
+}
+
 bool JsonIntegrityCheck(rapidjson::Document& doc)
 {
     if (!doc.HasMember("duration") || !doc.HasMember("longrest") || !doc.HasMember("shortrest") || !doc.HasMember("goal"))
@@ -48,19 +132,108 @@ bool JsonIntegrityCheck(rapidjson::Document& doc)
     return true;
 }
 
+std::mutex g_TimerMutex;
+bool g_bExitLoop;
+bool g_bOutputRemainingTime;
+bool g_bStillRunning;
+
+void Init()
+{
+    g_bExitLoop = false;
+    g_bOutputRemainingTime = false;
+    g_bStillRunning = true;
+}
+
 void CountDown(int& nMins)
 {
-    
+    std::cout << "Started\n";
+    int nSeconds = nMins*60;
+    int i = 0;
+    while (i < nSeconds)
+    {
+        g_TimerMutex.lock();
+        if (g_bExitLoop)
+        {
+            g_TimerMutex.unlock();
+            break;
+        }
+        if (g_bOutputRemainingTime)
+        {
+            std::cout << std::floor(((double)nSeconds - (double)i)/(double)60) << ":" << (nSeconds-i)%60 << std::endl;
+            g_bOutputRemainingTime = false;
+        }
+        g_TimerMutex.unlock();
+        ++i;
+        std::this_thread::sleep_for(std::chrono::nanoseconds(1000000000));
+    }
+    g_TimerMutex.lock();
+    g_bStillRunning = false;
+    g_TimerMutex.unlock();
+}
+
+void SimpleUi()
+{
+    bool bExit = false;
+    do
+    {
+        int nOption;
+        std::this_thread::sleep_for(std::chrono::nanoseconds(1000000000));
+        std::cout << "\n1 - Query Remaining Time\n2 - Exit Pomodoro\n";
+        std::cin >> nOption;
+        switch (nOption)
+        {
+            case 1:
+            {
+                g_TimerMutex.lock();
+                g_bOutputRemainingTime = true;
+                g_TimerMutex.unlock();
+                break;
+            }
+            case 2:
+            {
+                g_TimerMutex.lock();
+                g_bExitLoop = true;
+                g_TimerMutex.unlock();
+                bExit = true;
+                break;
+            }
+            default:
+            {
+                std::cout << "Please enter valid option\n";
+            }
+        }
+    }   while (!bExit);
 }
 
 void DoTime(int& nMins)
 {
+    Init();
     std::thread t1(CountDown, std::ref(nMins));
     t1.detach();
-    bool bExit = false;
-    while (!bExit)
     {
-        std::cout << "\n1 - Query Remaining Time\n2 - Exit Pomodoro";
+        std::thread t2(SimpleUi);
+        t2.detach();
+        bool bExit = false;
+        do
+        {
+            g_TimerMutex.lock();
+            if (!g_bStillRunning)
+            {
+                std::cout << "Pomodoro complete\n"; //note here i want to make a sound somehow.
+                bExit = true;
+            }
+            if (g_bExitLoop)
+            {
+                std::cout << "Exiting Pomodoro\n";
+                bExit = true;
+            }
+            g_TimerMutex.unlock();
+            if (bExit)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::nanoseconds(100000000));
+        }   while (true);
     }
 }
 
@@ -71,7 +244,6 @@ void PomodoroTimer()
     {
         CreateSettingsJson();
     }
-    std::cout << std::filesystem::current_path() << std::endl;
     
     std::ifstream inputJson("resources/settings.json");
     char buf[65536]{};
@@ -90,7 +262,7 @@ void PomodoroTimer()
     int nOption;
     while (!bExit)
     {
-        std::cout << "\n1 - Pomodoro\n2 - Short Break\n3 - Long Break\n4 - Query Remaining Time\n5 - Enter Settings\n6 - Exit Program";
+        std::cout << "\n1 - Pomodoro\n2 - Short Break\n3 - Long Break\n4 - Enter Settings\n5 - Exit Program\n";
         std::cin >> nOption;
         switch (nOption)
         {
@@ -98,26 +270,29 @@ void PomodoroTimer()
             {
                 int n = doc["duration"].GetInt();
                 DoTime(n);
+                break;
             }
             case 2:
             {
-                
+                int n = doc["shortrest"].GetInt();
+                DoTime(n);
+                break;
             }
             case 3:
             {
-                
+                int n = doc["longrest"].GetInt();
+                DoTime(n);
+                break;
             }
             case 4:
             {
-                
+                settings(doc);
+                break;
             }
             case 5:
             {
-                
-            }
-            case 6:
-            {
-                
+                bExit = true;
+                break;
             }
             default:
             {
@@ -127,47 +302,13 @@ void PomodoroTimer()
     }
 }
 
-void settings()
-{
-    
-}
-
 void mainmenu()
 {
     std::cout << "Welcome to the pomodoro timer\n";
-    int option;
-    bool bExit = false;
-    while (!bExit)
-    {
-        std::cout << "Main Menu\n1 - Start a Pomodoro Session\n2 - Enter settings\n3 - Exit program\n";
-        std::cin >> option;
-        switch (option)
-        {
-            case 1:
-            {
-                PomodoroTimer();
-                break;
-            }
-            case 2:
-            {
-                //launch settings
-                break;
-            }
-            case 3:
-            {
-                bExit = true;
-                break;
-            }
-            default:
-            {
-                std::cout << "Please enter a valid option\n";
-            }
-        }
-    }
+    PomodoroTimer();
 }
 
 int main(int argc, const char * argv[])
 {
-    std::cout << "\a" << std::flush;
     mainmenu();
 }
