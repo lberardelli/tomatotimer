@@ -15,6 +15,7 @@
 #include <thread>
 #include <mutex>
 #include <cmath>
+#include <chrono>
 
 //rapidjson
 #include "document.h"
@@ -98,6 +99,7 @@ void settings(rapidjson::Document& doc)
                 std::cin >> nGoal;
                 doc["goal"].SetInt(nGoal);
                 WriteJson(doc);
+                break;
             }
             case 5:
             {
@@ -114,6 +116,7 @@ void settings(rapidjson::Document& doc)
                     doc.GetObject().RemoveAllMembers();
                     doc.Parse(buf);
                 }
+                break;
             }
             case 6:
             {
@@ -133,23 +136,27 @@ bool JsonIntegrityCheck(rapidjson::Document& doc)
 }
 
 std::mutex g_TimerMutex;
+std::mutex g_UIMutex;
 bool g_bExitLoop;
 bool g_bOutputRemainingTime;
 bool g_bStillRunning;
+bool g_bShowUI;
 
 void Init()
 {
     g_bExitLoop = false;
     g_bOutputRemainingTime = false;
     g_bStillRunning = true;
+    g_bShowUI = true;
 }
 
 void CountDown(int& nMins)
 {
     std::cout << "Started\n";
+    auto start = std::chrono::system_clock::now();
     int nSeconds = nMins*60;
-    int i = 0;
-    while (i < nSeconds)
+    auto now = std::chrono::system_clock::now();
+    while (std::chrono::duration_cast<std::chrono::seconds>(now - start).count() < nSeconds)
     {
         g_TimerMutex.lock();
         if (g_bExitLoop)
@@ -159,12 +166,14 @@ void CountDown(int& nMins)
         }
         if (g_bOutputRemainingTime)
         {
-            std::cout << std::floor(((double)nSeconds - (double)i)/(double)60) << ":" << (nSeconds-i)%60 << std::endl;
+            std::cout << std::floor((nSeconds - (double)std::chrono::duration_cast<std::chrono::seconds>(now - start).count())/(double)60) << ":" << (nSeconds - std::chrono::duration_cast<std::chrono::seconds>(now - start).count())%60 << std::endl;
+            g_UIMutex.lock();
+            g_bShowUI = true;
+            g_UIMutex.unlock();
             g_bOutputRemainingTime = false;
         }
         g_TimerMutex.unlock();
-        ++i;
-        std::this_thread::sleep_for(std::chrono::nanoseconds(1000000000));
+        now = std::chrono::system_clock::now();
     }
     g_TimerMutex.lock();
     g_bStillRunning = false;
@@ -177,8 +186,17 @@ void SimpleUi()
     do
     {
         int nOption;
-        std::this_thread::sleep_for(std::chrono::nanoseconds(1000000000));
-        std::cout << "\n1 - Query Remaining Time\n2 - Exit Pomodoro\n";
+        while (true)
+        {
+            g_UIMutex.lock();
+            if (g_bShowUI)
+            {
+                std::cout << "\n1 - Query Remaining Time\n2 - Exit Pomodoro\n";
+                g_UIMutex.unlock();
+                break;
+            }
+            g_UIMutex.unlock();
+        }
         std::cin >> nOption;
         switch (nOption)
         {
@@ -187,6 +205,10 @@ void SimpleUi()
                 g_TimerMutex.lock();
                 g_bOutputRemainingTime = true;
                 g_TimerMutex.unlock();
+                
+                g_UIMutex.lock();
+                g_bShowUI = false;
+                g_UIMutex.unlock();
                 break;
             }
             case 2:
@@ -232,7 +254,6 @@ void DoTime(int& nMins)
             {
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::nanoseconds(100000000));
         }   while (true);
     }
 }
